@@ -276,12 +276,10 @@ class SemaforoPanel(QWidget):
     def update_estado(self, estado):
         """Actualizar estado del semáforo y LEDs"""
         self.estado_label.setText(estado)
-        
         # Actualizar LEDs
         self.led_rojo.set_state(estado in ['ROJO', 'ALL RED'])
         self.led_amarillo.set_state(estado == 'AMARILLO')
         self.led_verde.set_state(estado == 'VERDE')
-        
         # Color del texto según estado
         colors = {
             'VERDE': 'green',
@@ -291,6 +289,34 @@ class SemaforoPanel(QWidget):
         }
         color = colors.get(estado, 'black')
         self.estado_label.setStyleSheet(f"font-weight: bold; font-size: 14px; color: {color};")
+
+    def update_prioridad(self, local_request, remote_request):
+        """Actualizar visualización de prioridad local/remota"""
+        if local_request and remote_request:
+            self.prioridad_label.setText("Conflicto (ambos)")
+            self.prioridad_label.setStyleSheet("font-weight: bold; color: orange;")
+        elif local_request:
+            self.prioridad_label.setText("Solicitada (local)")
+            self.prioridad_label.setStyleSheet("font-weight: bold; color: blue;")
+        elif remote_request:
+            self.prioridad_label.setText("Remota")
+            self.prioridad_label.setStyleSheet("font-weight: bold; color: purple;")
+        else:
+            self.prioridad_label.setText("---")
+            self.prioridad_label.setStyleSheet("")
+
+    def update_estado_remoto(self, estado_remoto):
+        """Actualizar visualización de estado remoto"""
+        self.remoto_label.setText(estado_remoto)
+        colors = {
+            'VERDE': 'green',
+            'AMARILLO': 'orange',
+            'ROJO': 'red',
+            'ALL RED': 'darkred',
+            '---': 'gray'
+        }
+        color = colors.get(estado_remoto, 'black')
+        self.remoto_label.setStyleSheet(f"font-weight: bold; color: {color};")
     
     def update_distancia(self, distancia_cm):
         """Actualizar distancia del sensor"""
@@ -610,7 +636,28 @@ class MainWindow(QMainWindow):
         """Parsear línea del serial y actualizar UI"""
         panel = self.panel_a if port_id == "A" else self.panel_b
         
-        # Estado del semáforo
+        # Formato CSV: seq,ts,state,dist,veh,auto
+        csv_match = re.match(r'^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([01])\s*,\s*([01])\s*$', line.strip())
+        if csv_match:
+            seq, ts, state, dist, veh, auto = csv_match.groups()
+            state_map = {
+                '0': 'ALL RED',
+                '1': 'VERDE',
+                '2': 'AMARILLO',
+                '3': 'ROJO'
+            }
+            if state in state_map:
+                panel.update_estado(state_map[state])
+            panel.update_distancia(dist)
+            panel.update_vehiculo(veh == '1')
+            # Mostrar prioridad local (auto=1) y estado remoto si disponible
+            # auto: 1=solicita prioridad, 0=no
+            # En este CSV, no hay estado remoto, así que solo prioridad local
+            panel.update_prioridad(auto == '1', False)
+            panel.update_estado_remoto('---')
+            return
+        
+        # Estado del semáforo (formato texto)
         if "-> VERDE" in line:
             panel.update_estado("VERDE")
         elif "-> AMARILLO" in line:
@@ -627,27 +674,49 @@ class MainWindow(QMainWindow):
             estado, request, dist = tx_match.groups()
             panel.last_tx_label.setText(f"estado={estado}, req={request}")
             panel.update_distancia(dist)
-        
+            # Actualizar prioridad local
+            panel.update_prioridad(request == '1', False)
+            # Mostrar estado local
+            state_map = {'0': 'ALL RED', '1': 'VERDE', '2': 'AMARILLO', '3': 'ROJO'}
+            panel.update_estado(state_map.get(estado, '---'))
         # Mensajes RX ESP-NOW
         rx_match = re.search(r'RX de ESP (\d+): estado=(\d+), request=(\d+), dist=(\d+)', line)
         if rx_match:
             panel.increment_rx()
             sender, estado, request, dist = rx_match.groups()
+            # Actualizar prioridad remota y estado remoto
+            panel.update_prioridad(False, request == '1')
+            state_map = {'0': 'ALL RED', '1': 'VERDE', '2': 'AMARILLO', '3': 'ROJO'}
+            panel.update_estado_remoto(state_map.get(estado, '---'))
         
-        # Detección de vehículo (inferir de distancia)
+        # Detección de vehículo (inferir de distancia solo si no vino en CSV)
         dist_match = re.search(r'dist[ancia]*[=:]\s*(\d+)', line, re.IGNORECASE)
         if dist_match:
             dist = int(dist_match.group(1))
             panel.update_distancia(dist)
-            panel.update_vehiculo(dist < 100)
+            # Solo actualizar vehículo aquí si no fue CSV
+            if not csv_match:
+                panel.update_vehiculo(dist < 100)
         
-        # Sincronización
+        # Sincronización y ESP-NOW
         if "SIN SYNC" in line or "Sin comunicación" in line:
             panel.sync_label.setText("❌ SIN SYNC")
             panel.sync_label.setStyleSheet("color: red; font-weight: bold;")
-        elif "Peer añadido" in line or "OK" in line:
-            panel.sync_label.setText("✅ OK")
+        elif "Peer añadido correctamente" in line:
+            panel.sync_label.setText("✅ PEER OK")
             panel.sync_label.setStyleSheet("color: green; font-weight: bold;")
+        elif "ESP-NOW inicializado OK" in line:
+            panel.sync_label.setText("✅ INIT OK")
+            panel.sync_label.setStyleSheet("color: yellow; font-weight: bold;")
+        elif "Error TX ESP-NOW" in line or "Callback: Error" in line or "status=1" in line:
+            panel.sync_label.setText("⚠️ ERROR TX (status=1)")
+            panel.sync_label.setStyleSheet("color: orange; font-weight: bold; background: #330000; border: 2px solid red;")
+        elif "Peer MAC:" in line:
+            # Extraer y mostrar MAC del peer
+            mac_match = re.search(r'([0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2})', line)
+            if mac_match:
+                panel.sync_label.setText(f"✅ {mac_match.group(1)}")
+                panel.sync_label.setStyleSheet("color: green; font-weight: bold;")
     
     def append_log(self, log_type, text):
         """Agregar línea al log correspondiente"""

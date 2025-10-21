@@ -45,8 +45,42 @@
 // ==================== IDENTIFICACIÓN ====================
 #define DEVICE_ID     2   // 1 = SEMAFORO_A, 2 = SEMAFORO_B
 
-// Dirección MAC del SEMAFORO_A (MAC real del ESP A)
-uint8_t peerMAC[] = {0x10, 0x51, 0xDB, 0x82, 0x5D, 0x70};
+// MAC del peer se obtiene dinámicamente por UART
+uint8_t peerMAC[6] = {0};
+
+// Enviar propia MAC por UART
+void sendOwnMAC() {
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  Serial.print("MYMAC:");
+  for (int i = 0; i < 6; i++) {
+    if (i > 0) Serial.print(":");
+    Serial.printf("%02X", mac[i]);
+  }
+  Serial.println();
+}
+
+// Esperar y leer MAC del peer por UART
+bool waitForPeerMAC(unsigned long timeoutMs = 5000) {
+  unsigned long start = millis();
+  String line;
+  while (millis() - start < timeoutMs) {
+    if (Serial.available()) {
+      line = Serial.readStringUntil('\n');
+      line.trim();
+      if (line.startsWith("MYMAC:")) {
+        int idx = 0;
+        char *token = strtok((char*)line.c_str() + 6, ":");
+        while (token && idx < 6) {
+          peerMAC[idx++] = (uint8_t)strtol(token, NULL, 16);
+          token = strtok(NULL, ":");
+        }
+        if (idx == 6) return true;
+      }
+    }
+  }
+  return false;
+}
 
 // ==================== PARÁMETROS DEL SISTEMA ====================
 #define GREEN_NORMAL        10000  // 10 segundos en verde (modo normal)
@@ -55,8 +89,8 @@ uint8_t peerMAC[] = {0x10, 0x51, 0xDB, 0x82, 0x5D, 0x70};
 #define MAX_GREEN           20000  // Máximo tiempo en verde (modo adaptativo)
 #define EXTEND_STEP         3000   // Incremento por detección (3 s)
 
-#define DETECTION_THRESHOLD_CM  100   // Distancia para detectar vehículo (cm)
-#define DETECTION_PERSIST_MS    1000  // Tiempo de confirmación de detección
+#define DETECTION_THRESHOLD_CM  5     // Distancia para detectar vehículo (cm)
+#define DETECTION_PERSIST_MS    500   // Ventana de detección tras lectura válida
 #define BROADCAST_INTERVAL      200   // Intervalo de envío ESP-NOW (ms)
 #define PEER_TIMEOUT            2000  // Tiempo sin mensajes para modo seguro
 
@@ -148,12 +182,14 @@ uint16_t measureDistance() {
 void updateVehicleDetection() {
   currentDistance = measureDistance();
   
-  if (currentDistance < DETECTION_THRESHOLD_CM) {
+  // If any reading is within threshold, record the time of detection.
+  if (currentDistance <= DETECTION_THRESHOLD_CM) {
+    lastDetectionTime = millis();
+  }
+
+  // Consider vehicle detected for DETECTION_PERSIST_MS after the last detection reading.
+  if (millis() - lastDetectionTime <= DETECTION_PERSIST_MS) {
     if (!vehicleDetected) {
-      lastDetectionTime = millis();
-    }
-    // Confirmar detección sostenida
-    if (millis() - lastDetectionTime >= DETECTION_PERSIST_MS) {
       vehicleDetected = true;
       requestPriority = true;
     }
@@ -248,9 +284,12 @@ void updateDisplay() {
 // ==================== CALLBACKS ESP-NOW ====================
 // Nueva firma de callback de envío (core ESP32 reciente)
 void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
-  // Callback opcional para debug: solo comprobamos el estado de envío
-  if (status != ESP_NOW_SEND_SUCCESS) {
-    Serial.println("Error enviando mensaje ESP-NOW");
+  // Callback de confirmación de envío
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    // TX exitoso - silencioso para no saturar logs
+  } else {
+    Serial.print("Callback: Error en envío, status=");
+    Serial.println(status);
   }
 }
 
@@ -283,17 +322,41 @@ void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingDat
 
 // ==================== FUNCIONES ESP-NOW ====================
 void initESPNow() {
+  // Desconectar WiFi previo y limpiar configuración
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  delay(100);
+  
+  // Configurar WiFi en modo estación
   WiFi.mode(WIFI_STA);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Máxima potencia
+  delay(100);
+  
   Serial.print("MAC Address: ");
   Serial.println(WiFi.macAddress());
   
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("Error inicializando ESP-NOW");
+  // Desinicializar ESP-NOW si estaba activo
+  esp_now_deinit();
+  delay(100);
+  
+  // Inicializar ESP-NOW
+  esp_err_t initResult = esp_now_init();
+  if (initResult != ESP_OK) {
+    Serial.print("Error inicializando ESP-NOW: 0x");
+    Serial.println(initResult, HEX);
     return;
   }
+  Serial.println("ESP-NOW inicializado OK");
   
+  // Registrar callbacks
   esp_now_register_send_cb(onDataSent);
   esp_now_register_recv_cb(onDataRecv);
+  
+  // Verificar si el peer ya existe y eliminarlo
+  if (esp_now_is_peer_exist(peerMAC)) {
+    esp_now_del_peer(peerMAC);
+    Serial.println("Peer anterior eliminado");
+  }
   
   // Registrar peer
   esp_now_peer_info_t peerInfo;
@@ -301,11 +364,20 @@ void initESPNow() {
   memcpy(peerInfo.peer_addr, peerMAC, 6);
   peerInfo.channel = 0;
   peerInfo.encrypt = false;
+  peerInfo.ifidx = WIFI_IF_STA;
   
-  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("Error añadiendo peer");
+  esp_err_t addResult = esp_now_add_peer(&peerInfo);
+  if (addResult != ESP_OK) {
+    Serial.print("Error añadiendo peer: 0x");
+    Serial.println(addResult, HEX);
   } else {
     Serial.println("Peer añadido correctamente");
+    Serial.print("Peer MAC: ");
+    for (int i = 0; i < 6; i++) {
+      Serial.printf("%02X", peerMAC[i]);
+      if (i < 5) Serial.print(":");
+    }
+    Serial.println();
   }
 }
 
@@ -313,7 +385,11 @@ void broadcastState() {
   if (millis() - lastBroadcast < BROADCAST_INTERVAL) {
     return;
   }
-  
+
+  // Robust peer registration and send retry logic
+  int sendAttempts = 0;
+  const int maxSendAttempts = 2;
+  esp_err_t result = ESP_FAIL;
   TrafficMsg msg;
   msg.sender_id = DEVICE_ID;
   msg.seq = messageSeq++;
@@ -321,10 +397,46 @@ void broadcastState() {
   msg.request = requestPriority ? 1 : 0;
   msg.distance_cm = currentDistance;
   msg.timestamp_ms = millis();
-  
-  esp_err_t result = esp_now_send(peerMAC, (uint8_t *)&msg, sizeof(msg));
+
+  while (sendAttempts < maxSendAttempts) {
+    // Ensure peer is registered
+    if (!esp_now_is_peer_exist(peerMAC)) {
+      Serial.println("[ESP-NOW] Peer not found, registering...");
+      esp_now_peer_info_t peerInfo;
+      memset(&peerInfo, 0, sizeof(peerInfo));
+      memcpy(peerInfo.peer_addr, peerMAC, 6);
+      peerInfo.channel = 0;
+      peerInfo.encrypt = false;
+      peerInfo.ifidx = WIFI_IF_STA;
+      esp_err_t addResult = esp_now_add_peer(&peerInfo);
+      if (addResult != ESP_OK && addResult != ESP_ERR_ESPNOW_EXIST) {
+        Serial.print("[ESP-NOW] Failed to add peer: 0x");
+        Serial.println(addResult, HEX);
+        break;
+      }
+    }
+
+    result = esp_now_send(peerMAC, (uint8_t *)&msg, sizeof(msg));
+    if (result == ESP_OK) {
+      break;
+    } else if (result == ESP_ERR_ESPNOW_NOT_FOUND && sendAttempts == 0) {
+      // Peer lost, try to re-register and retry once
+      Serial.println("[ESP-NOW] Peer lost before send, retrying registration...");
+      esp_now_del_peer(peerMAC);
+      esp_now_peer_info_t peerInfo;
+      memset(&peerInfo, 0, sizeof(peerInfo));
+      memcpy(peerInfo.peer_addr, peerMAC, 6);
+      peerInfo.channel = 0;
+      peerInfo.encrypt = false;
+      peerInfo.ifidx = WIFI_IF_STA;
+      esp_now_add_peer(&peerInfo);
+    } else {
+      break;
+    }
+    sendAttempts++;
+  }
   lastBroadcast = millis();
-  
+
   if (result == ESP_OK) {
     Serial.print("TX: estado=");
     Serial.print(msg.state);
@@ -332,6 +444,9 @@ void broadcastState() {
     Serial.print(msg.request);
     Serial.print(", dist=");
     Serial.println(msg.distance_cm);
+  } else {
+    Serial.print("Error TX ESP-NOW: 0x");
+    Serial.println(result, HEX);
   }
 }
 
@@ -378,19 +493,23 @@ void updateStateMachine() {
   switch(currentState) {
     case STATE_ALL_RED:
       if (elapsed >= ALL_RED_DURATION) {
-        // Decidir quién pasa a verde
-        if (shouldGetPriority() || (cycleCount % 2 == 1)) {  // B arranca en ciclos impares
-          if (canTransitionToGreen()) {
-            currentState = STATE_GREEN;
-            greenDuration = vehicleDetected ? MAX_GREEN : GREEN_NORMAL;
+        // Solo pasar a verde si el otro NO está en ALL_RED
+        if (remoteState != STATE_ALL_RED) {
+          // Decidir quién pasa a verde
+          if (shouldGetPriority() || (cycleCount % 2 == 1)) {  // B arranca en ciclos impares
+            if (canTransitionToGreen()) {
+              currentState = STATE_GREEN;
+              greenDuration = vehicleDetected ? MAX_GREEN : GREEN_NORMAL;
+              stateStartTime = millis();
+              Serial.println("-> VERDE");
+            }
+          } else {
+            currentState = STATE_RED;
             stateStartTime = millis();
-            Serial.println("-> VERDE");
+            Serial.println("-> ROJO (turno de A)");
           }
-        } else {
-          currentState = STATE_RED;
-          stateStartTime = millis();
-          Serial.println("-> ROJO (turno de A)");
         }
+        // Si ambos siguen en ALL_RED, esperar hasta que uno avance
       }
       break;
       

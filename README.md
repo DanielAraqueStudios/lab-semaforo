@@ -123,10 +123,206 @@ lab-semaforo/
        (Ciclo se repite)
 ```
 
-### Con detección de vehículo:
-- **Verde extendido:** Hasta 20s si hay vehículo (<100cm)
-- **Prioridad:** Carril con vehículo más cercano
-- **Fairness:** Alternancia automática cada N ciclos
+---
+
+## 🧠 Lógica del semáforo (Explicación detallada)
+
+### 📋 Estados posibles:
+
+El sistema utiliza una máquina de estados con 5 estados principales:
+
+```cpp
+enum State {
+  ALL_RED,   // 0: Ambos semáforos en rojo (seguridad)
+  GREEN,     // 1: Verde (permite paso)
+  YELLOW,    // 2: Amarillo (advertencia/transición)
+  RED,       // 3: Rojo (detención)
+  WAIT       // 4: Esperando turno
+};
+```
+
+### 🔄 Flujo de estados:
+
+#### **Caso 1: Sin vehículos detectados**
+
+El sistema opera en un ciclo básico alternando entre ambos semáforos:
+
+1. **ALL_RED (1s)** → Período de seguridad donde ambos están en rojo
+2. **Semáforo A → GREEN (10s)** / Semáforo B → RED
+3. **Semáforo A → YELLOW (3s)** / Semáforo B → RED (transición)
+4. **ALL_RED (1s)** → Nuevo período de seguridad
+5. **Semáforo A → RED** / Semáforo B → GREEN (10s)
+6. **Semáforo A → RED** / Semáforo B → YELLOW (3s)
+7. **Volver al paso 1**
+
+**Duración del ciclo completo:** ~28 segundos (sin vehículos)
+
+#### **Caso 2: Con vehículos detectados**
+
+Cuando un vehículo es detectado (distancia ≤ 5 cm durante ≥ 500 ms):
+
+**Verde extendido:**
+- Si el semáforo está en VERDE y detecta vehículo → Extiende hasta **20s máximo**
+- El tiempo se extiende mientras haya presencia continua
+- Evita cortar el paso a vehículos en movimiento
+
+**Solicitud de prioridad:**
+- El semáforo en ROJO con vehículo detectado envía `request = 1`
+- Esto notifica al otro semáforo que hay tráfico esperando
+- El semáforo en verde puede acortar su ciclo si no tiene vehículos
+
+### 🎯 Sistema de prioridad inteligente:
+
+Cuando **AMBOS** semáforos detectan vehículos simultáneamente:
+
+#### **1. Comparación de distancia:**
+```cpp
+if (myDistance < peerDistance) {
+  // Mi vehículo está más cerca → Yo tengo prioridad
+  shouldHaveGreen = true;
+}
+else if (peerDistance < myDistance) {
+  // Vehículo del otro semáforo más cerca → Él tiene prioridad
+  shouldHaveGreen = false;
+}
+```
+
+**Ejemplo:**
+- Semáforo A detecta vehículo a 3 cm
+- Semáforo B detecta vehículo a 4 cm
+- **Resultado:** A obtiene luz verde (vehículo más cercano)
+
+#### **2. Desempate por ID:**
+Si ambos vehículos están exactamente a la misma distancia:
+
+```cpp
+else if (peerDistance == myDistance) {
+  // Empate → Gana el semáforo con ID mayor
+  shouldHaveGreen = (DEVICE_ID > peerSenderId);
+}
+```
+
+**Ejemplo:**
+- Semáforo A (ID=1) detecta vehículo a 5 cm
+- Semáforo B (ID=2) detecta vehículo a 5 cm
+- **Resultado:** B obtiene luz verde (ID mayor)
+
+### 🚗 Detección de vehículos (HC-SR04):
+
+#### **Parámetros de detección:**
+```cpp
+#define DETECTION_THRESHOLD_CM 5      // Distancia mínima para detección
+#define DETECTION_PERSIST_MS 500      // Tiempo mínimo de presencia
+```
+
+#### **Lógica de ventana temporal:**
+```cpp
+void updateVehicleDetection() {
+  long distance = measureDistance();
+  
+  // Si detecta vehículo cercano → Actualizar timestamp
+  if (distance <= DETECTION_THRESHOLD_CM) {
+    lastDetectionTime = millis();
+  }
+  
+  // Vehículo detectado SI la última lectura válida fue hace < 500ms
+  vehicleDetected = (millis() - lastDetectionTime <= DETECTION_PERSIST_MS);
+}
+```
+
+**¿Por qué esta lógica?**
+- ✅ Evita falsos positivos por rebotes del ultrasonido
+- ✅ No requiere lecturas continuas (más robusto)
+- ✅ Permite detectar vehículos en movimiento lento
+- ✅ Ventana de 500ms suficiente para actualizar estado
+
+### 📡 Comunicación ESP-NOW:
+
+Cada **200 ms**, ambos semáforos transmiten:
+
+```cpp
+struct TrafficMsg {
+  uint8_t sender_id;      // 1 o 2 (identifica quién envía)
+  uint8_t seq;            // Número de secuencia (0-255)
+  uint8_t state;          // Estado actual (0-4)
+  uint8_t request;        // 1 si tiene vehículo y pide prioridad
+  uint16_t distance_cm;   // Distancia medida (9999 = sin detección)
+  uint32_t timestamp_ms;  // Tiempo interno del ESP
+};
+```
+
+**Protocolo de sincronización:**
+- Cada semáforo conoce el estado del otro en tiempo real
+- Si no recibe mensajes por > 2000 ms → Asume desconexión
+- Los mensajes permiten coordinar transiciones de estado
+
+### ⚠️ Seguridad y transiciones:
+
+#### **Estado ALL_RED obligatorio:**
+```cpp
+void transitionToAllRed() {
+  setLights(true, false, false);  // Rojo ON, Amarillo OFF, Verde OFF
+  stateStartTime = millis();
+  
+  // Después de 1000ms → Decidir siguiente estado
+}
+```
+
+**¿Por qué ALL_RED?**
+- ✅ Evita que ambos semáforos estén en verde simultáneamente
+- ✅ Da tiempo de seguridad para que vehículos crucen completamente
+- ✅ Punto de sincronización entre ambos sistemas
+
+#### **Regla de transición YELLOW → ALL_RED:**
+```cpp
+case YELLOW:
+  if (elapsed >= YELLOW_DURATION) {  // 3000ms
+    currentState = ALL_RED;
+    // Nunca pasa directo de YELLOW a RED sin ALL_RED
+  }
+  break;
+```
+
+### 🔁 Ejemplo de ciclo completo con prioridad:
+
+**Situación inicial:**
+- Semáforo A en VERDE (8s transcurridos)
+- Semáforo B en ROJO
+- Ambos sin vehículos
+
+**t = 8s:** Vehículo se acerca a B (4 cm)
+- B detecta vehículo → `request = 1`
+- A recibe solicitud → Evalúa extender verde o ceder turno
+- A no tiene vehículos → Continúa ciclo normal (2s más)
+
+**t = 10s:** A completa su verde
+- A → YELLOW (3s)
+- B → espera en RED con `request = 1`
+
+**t = 13s:** A termina amarillo
+- A → ALL_RED
+- B → ALL_RED
+
+**t = 14s:** Período de seguridad termina
+- A → RED
+- B → GREEN (tiene prioridad por vehículo detectado)
+
+**t = 14-34s:** B en verde hasta 20s máximo
+- Si vehículo sigue presente → Mantiene verde
+- Si vehículo se aleja → Puede terminar antes
+
+### 📊 Tiempos configurables:
+
+| Parámetro | Valor | Modificable en |
+|-----------|-------|----------------|
+| Verde normal | 10s | `GREEN_NORMAL_DURATION` |
+| Verde máximo | 20s | `MAX_GREEN_DURATION` |
+| Amarillo | 3s | `YELLOW_DURATION` |
+| All-Red | 1s | `ALL_RED_DURATION` |
+| Detección threshold | 5 cm | `DETECTION_THRESHOLD_CM` |
+| Persistencia | 500 ms | `DETECTION_PERSIST_MS` |
+| Broadcast ESP-NOW | 200 ms | `loop()` delay |
+| Timeout peer | 2000 ms | `peerTimeoutMs` |
 
 ---
 
