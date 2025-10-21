@@ -45,42 +45,8 @@
 // ==================== IDENTIFICACIÓN ====================
 #define DEVICE_ID     2   // 1 = SEMAFORO_A, 2 = SEMAFORO_B
 
-// MAC del peer se obtiene dinámicamente por UART
-uint8_t peerMAC[6] = {0};
-
-// Enviar propia MAC por UART
-void sendOwnMAC() {
-  uint8_t mac[6];
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
-  Serial.print("MYMAC:");
-  for (int i = 0; i < 6; i++) {
-    if (i > 0) Serial.print(":");
-    Serial.printf("%02X", mac[i]);
-  }
-  Serial.println();
-}
-
-// Esperar y leer MAC del peer por UART
-bool waitForPeerMAC(unsigned long timeoutMs = 5000) {
-  unsigned long start = millis();
-  String line;
-  while (millis() - start < timeoutMs) {
-    if (Serial.available()) {
-      line = Serial.readStringUntil('\n');
-      line.trim();
-      if (line.startsWith("MYMAC:")) {
-        int idx = 0;
-        char *token = strtok((char*)line.c_str() + 6, ":");
-        while (token && idx < 6) {
-          peerMAC[idx++] = (uint8_t)strtol(token, NULL, 16);
-          token = strtok(NULL, ":");
-        }
-        if (idx == 6) return true;
-      }
-    }
-  }
-  return false;
-}
+// MAC del peer (SEMAFORO_A) - MANUAL
+uint8_t peerMAC[6] =  {0x10, 0x51, 0xDB, 0x82, 0x5D, 0x70}; // MAC de ESP32-A
 
 // ==================== PARÁMETROS DEL SISTEMA ====================
 #define GREEN_NORMAL        10000  // 10 segundos en verde (modo normal)
@@ -493,7 +459,7 @@ void updateStateMachine() {
   switch(currentState) {
     case STATE_ALL_RED:
       if (elapsed >= ALL_RED_DURATION) {
-        // Solo pasar a verde si el otro NO está en ALL_RED
+        // SEMÁFORO B espera a que A salga de ALL_RED primero para evitar conflicto
         if (remoteState != STATE_ALL_RED) {
           // Decidir quién pasa a verde
           if (shouldGetPriority() || (cycleCount % 2 == 1)) {  // B arranca en ciclos impares
@@ -509,7 +475,7 @@ void updateStateMachine() {
             Serial.println("-> ROJO (turno de A)");
           }
         }
-        // Si ambos siguen en ALL_RED, esperar hasta que uno avance
+        // Si A aún está en ALL_RED, B espera
       }
       break;
       
@@ -557,8 +523,8 @@ void updateStateMachine() {
 // ==================== SETUP ====================
 void setup() {
   Serial.begin(115200);
-  Serial.println("\n=== SEMAFORO B - Iniciando ===");
-  
+  delay(1000);
+
   // Configurar pines
   pinMode(LED_ROJO, OUTPUT);
   pinMode(LED_AMARILLO, OUTPUT);
@@ -566,9 +532,24 @@ void setup() {
   pinMode(TRIG_PIN, OUTPUT);
   pinMode(ECHO_PIN, INPUT);
   pinMode(BUZZER_PIN, OUTPUT);
-  
+
   setLEDs(false, false, false);
-  
+
+  WiFi.mode(WIFI_STA);
+  delay(100);
+
+  Serial.println("\n\n====================================");
+  Serial.println("    SEMAFORO B - MAC MANUAL");
+  Serial.println("====================================");
+  Serial.print("MAC propia: ");
+  Serial.println(WiFi.macAddress());
+  Serial.print("MAC del peer (A): ");
+  for (int i = 0; i < 6; i++) {
+    Serial.printf("%02X", peerMAC[i]);
+    if (i < 5) Serial.print(":");
+  }
+  Serial.println();
+
   // Inicializar OLED (DESHABILITADO TEMPORALMENTE)
   /*
   Wire.begin(OLED_SDA, OLED_SCL);
@@ -586,14 +567,14 @@ void setup() {
   }
   */
   Serial.println("OLED: Deshabilitado (no conectado)");
-  
+
   // Inicializar ESP-NOW
   initESPNow();
-  
+
   // Estado inicial
   currentState = STATE_ALL_RED;
   stateStartTime = millis();
-  
+
   Serial.println("=== Sistema listo ===");
   tone(BUZZER_PIN, 2000, 100);
   delay(100);

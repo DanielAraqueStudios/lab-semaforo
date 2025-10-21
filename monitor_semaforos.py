@@ -163,6 +163,21 @@ class SemaforoPanel(QWidget):
         super().__init__()
         self.semaforo_id = semaforo_id
         self.init_ui()
+        # Error tracking for TX
+        self.tx_error_count = 0
+        self.tx_error_threshold = 3  # Show error only if 3 or more consecutive
+    def reset_tx_error(self):
+        self.tx_error_count = 0
+        # Only clear error if currently showing error
+        if self.sync_label.text().startswith("⚠️ ERROR TX"):
+            self.sync_label.setText("✅ OK")
+            self.sync_label.setStyleSheet("color: green; font-weight: bold;")
+
+    def register_tx_error(self):
+        self.tx_error_count += 1
+        if self.tx_error_count >= self.tx_error_threshold:
+            self.sync_label.setText("⚠️ ERROR TX (status=1)")
+            self.sync_label.setStyleSheet("color: orange; font-weight: bold; background: #330000; border: 2px solid red;")
     
     def init_ui(self):
         main_layout = QVBoxLayout()
@@ -203,8 +218,8 @@ class SemaforoPanel(QWidget):
         self.tiempo_label = QLabel("--- s")
         info_layout.addWidget(self.tiempo_label, 1, 1)
         
-        # Distancia sensor
-        info_layout.addWidget(QLabel("Distancia:"), 2, 0)
+        # Distancia sensor (solo local)
+        info_layout.addWidget(QLabel("Distancia (local):"), 2, 0)
         self.distancia_label = QLabel("--- cm")
         info_layout.addWidget(self.distancia_label, 2, 1)
         
@@ -635,7 +650,8 @@ class MainWindow(QMainWindow):
     def parse_serial_line(self, port_id, line):
         """Parsear línea del serial y actualizar UI"""
         panel = self.panel_a if port_id == "A" else self.panel_b
-        
+        updated_dist = False
+
         # Formato CSV: seq,ts,state,dist,veh,auto
         csv_match = re.match(r'^\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([01])\s*,\s*([01])\s*$', line.strip())
         if csv_match:
@@ -649,55 +665,61 @@ class MainWindow(QMainWindow):
             if state in state_map:
                 panel.update_estado(state_map[state])
             panel.update_distancia(dist)
+            updated_dist = True
             panel.update_vehiculo(veh == '1')
-            # Mostrar prioridad local (auto=1) y estado remoto si disponible
-            # auto: 1=solicita prioridad, 0=no
-            # En este CSV, no hay estado remoto, así que solo prioridad local
             panel.update_prioridad(auto == '1', False)
             panel.update_estado_remoto('---')
+            panel.reset_tx_error()
             return
-        
+
         # Estado del semáforo (formato texto)
         if "-> VERDE" in line:
             panel.update_estado("VERDE")
+            panel.reset_tx_error()
         elif "-> AMARILLO" in line:
             panel.update_estado("AMARILLO")
+            panel.reset_tx_error()
         elif "-> ROJO" in line:
             panel.update_estado("ROJO")
+            panel.reset_tx_error()
         elif "-> ALL_RED" in line:
             panel.update_estado("ALL RED")
-        
-        # Mensajes TX ESP-NOW
+            panel.reset_tx_error()
+
+        # Mensajes TX ESP-NOW: solo actualiza distancia local
         tx_match = re.search(r'TX: estado=(\d+), request=(\d+), dist=(\d+)', line)
         if tx_match:
             panel.increment_tx()
             estado, request, dist = tx_match.groups()
             panel.last_tx_label.setText(f"estado={estado}, req={request}")
+            # Actualizar distancia local (TX siempre es del propio ESP)
             panel.update_distancia(dist)
-            # Actualizar prioridad local
+            updated_dist = True
             panel.update_prioridad(request == '1', False)
-            # Mostrar estado local
             state_map = {'0': 'ALL RED', '1': 'VERDE', '2': 'AMARILLO', '3': 'ROJO'}
             panel.update_estado(state_map.get(estado, '---'))
-        # Mensajes RX ESP-NOW
+            panel.reset_tx_error()
+
+        # Mensajes RX ESP-NOW (NO actualizar distancia local)
         rx_match = re.search(r'RX de ESP (\d+): estado=(\d+), request=(\d+), dist=(\d+)', line)
         if rx_match:
             panel.increment_rx()
             sender, estado, request, dist = rx_match.groups()
-            # Actualizar prioridad remota y estado remoto
             panel.update_prioridad(False, request == '1')
             state_map = {'0': 'ALL RED', '1': 'VERDE', '2': 'AMARILLO', '3': 'ROJO'}
             panel.update_estado_remoto(state_map.get(estado, '---'))
-        
-        # Detección de vehículo (inferir de distancia solo si no vino en CSV)
+            # NO actualizar distancia aquí (es distancia remota)
+            panel.reset_tx_error()
+            updated_dist = True  # Marcar para no procesar en el bloque genérico
+
+        # Detección de vehículo (inferir de distancia solo si no vino en CSV ni TX ni RX)
         dist_match = re.search(r'dist[ancia]*[=:]\s*(\d+)', line, re.IGNORECASE)
-        if dist_match:
+        if dist_match and not updated_dist:
             dist = int(dist_match.group(1))
             panel.update_distancia(dist)
-            # Solo actualizar vehículo aquí si no fue CSV
             if not csv_match:
                 panel.update_vehiculo(dist < 100)
-        
+
         # Sincronización y ESP-NOW
         if "SIN SYNC" in line or "Sin comunicación" in line:
             panel.sync_label.setText("❌ SIN SYNC")
@@ -709,10 +731,8 @@ class MainWindow(QMainWindow):
             panel.sync_label.setText("✅ INIT OK")
             panel.sync_label.setStyleSheet("color: yellow; font-weight: bold;")
         elif "Error TX ESP-NOW" in line or "Callback: Error" in line or "status=1" in line:
-            panel.sync_label.setText("⚠️ ERROR TX (status=1)")
-            panel.sync_label.setStyleSheet("color: orange; font-weight: bold; background: #330000; border: 2px solid red;")
+            panel.register_tx_error()
         elif "Peer MAC:" in line:
-            # Extraer y mostrar MAC del peer
             mac_match = re.search(r'([0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2})', line)
             if mac_match:
                 panel.sync_label.setText(f"✅ {mac_match.group(1)}")
