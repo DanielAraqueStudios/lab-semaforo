@@ -26,17 +26,18 @@
 #include <Adafruit_SSD1306.h>
 
 // ==================== CONFIGURACIÓN DE PINES ====================
-#define LED_ROJO      16
-#define LED_AMARILLO  17
-#define LED_VERDE     18
+// Pines disponibles: 1,2,42,40,39,38,37,36,35,48,47,21
+#define LED_ROJO      1
+#define LED_AMARILLO  2
+#define LED_VERDE     42
 
-#define TRIG_PIN      25
-#define ECHO_PIN      26
+#define TRIG_PIN      40
+#define ECHO_PIN      39
 
-#define BUZZER_PIN    27  // Opcional
+#define BUZZER_PIN    38  // Opcional
 
 #define OLED_SDA      21
-#define OLED_SCL      22
+#define OLED_SCL      47
 #define SCREEN_WIDTH  128
 #define SCREEN_HEIGHT 64
 #define OLED_RESET    -1
@@ -44,9 +45,8 @@
 // ==================== IDENTIFICACIÓN ====================
 #define DEVICE_ID     1   // 1 = SEMAFORO_A, 2 = SEMAFORO_B
 
-// Dirección MAC del SEMAFORO_B (reemplazar con la MAC real del otro ESP32)
-// Obtener con WiFi.macAddress() en el otro dispositivo
-uint8_t peerMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};  // CAMBIAR ESTO
+// Dirección MAC del SEMAFORO_B (MAC real del ESP B)
+uint8_t peerMAC[] = {0x50, 0x78, 0x7D, 0x15, 0xB3, 0x84};
 
 // ==================== PARÁMETROS DEL SISTEMA ====================
 #define GREEN_NORMAL        10000  // 10 segundos en verde (modo normal)
@@ -167,6 +167,10 @@ void updateVehicleDetection() {
 
 // ==================== FUNCIONES DE PANTALLA OLED ====================
 void updateDisplay() {
+  // OLED deshabilitado temporalmente
+  return;
+  
+  /*
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -238,32 +242,35 @@ void updateDisplay() {
   }
   
   display.display();
+  */
 }
 
 // ==================== CALLBACKS ESP-NOW ====================
-void onDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  // Callback opcional para debug
+// Nueva firma de callback de envío (core ESP32 reciente)
+void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
+  // Callback opcional para debug: solo comprobamos el estado de envío
   if (status != ESP_NOW_SEND_SUCCESS) {
     Serial.println("Error enviando mensaje ESP-NOW");
   }
 }
 
-void onDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+// Nueva firma de callback de recepción (core ESP32 reciente)
+void onDataRecv(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) {
   if (len != sizeof(TrafficMsg)) {
     Serial.println("Mensaje de tamaño incorrecto");
     return;
   }
-  
+
   TrafficMsg msg;
   memcpy(&msg, incomingData, sizeof(msg));
-  
+
   // Actualizar estado remoto
   remoteState = (TrafficState)msg.state;
   remoteRequestPriority = (msg.request == 1);
   remoteDistance = msg.distance_cm;
   remoteSeq = msg.seq;
   lastRemoteMsg = millis();
-  
+
   Serial.print("RX de ESP ");
   Serial.print(msg.sender_id);
   Serial.print(": estado=");
@@ -443,7 +450,8 @@ void setup() {
   
   setLEDs(false, false, false);
   
-  // Inicializar OLED
+  // Inicializar OLED (DESHABILITADO TEMPORALMENTE)
+  /*
   Wire.begin(OLED_SDA, OLED_SCL);
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println("Error inicializando OLED");
@@ -457,6 +465,8 @@ void setup() {
     display.println("Iniciando...");
     display.display();
   }
+  */
+  Serial.println("OLED: Deshabilitado (no conectado)");
   
   // Inicializar ESP-NOW
   initESPNow();

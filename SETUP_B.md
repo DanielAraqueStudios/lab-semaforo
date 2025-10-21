@@ -32,17 +32,17 @@ uint8_t peerMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};  // CAMBIAR ESTO
 
 ### 2. Pines asignados (verificar antes de cablear)
 ```cpp
-LED_ROJO = 2
-LED_AMARILLO = 4
-LED_VERDE = 5
-TRIG_PIN = 32
-ECHO_PIN = 33
-BUZZER_PIN = 15
-OLED_SDA = 21
-OLED_SCL = 22
+LED_ROJO = 4
+LED_AMARILLO = 5
+LED_VERDE = 6
+TRIG_PIN = 7
+ECHO_PIN = 15
+BUZZER_PIN = 16
+OLED_SDA = 17
+OLED_SCL = 18
 ```
 
-**NOTA:** Estos pines son DIFERENTES a los de traffic_A para evitar conflictos.
+**NOTA:** Estos pines son completamente DIFERENTES a los de A para evitar conflictos y están optimizados para ESP32-S3.
 
 ### 3. Parámetros del sistema (iguales a A)
 - `GREEN_NORMAL` = 10000 ms (10 segundos)
@@ -80,24 +80,24 @@ OLED_SCL = 22
 ## Cableado del hardware (SEMAFORO B)
 
 ### LEDs (con resistencias 220Ω):
-- LED ROJO → GPIO 2 → resistencia 220Ω → GND
-- LED AMARILLO → GPIO 4 → resistencia 220Ω → GND
-- LED VERDE → GPIO 5 → resistencia 220Ω → GND
+- LED ROJO → GPIO 4 → resistencia 220Ω → GND
+- LED AMARILLO → GPIO 5 → resistencia 220Ω → GND
+- LED VERDE → GPIO 6 → resistencia 220Ω → GND
 
 ### Sensor HC-SR04:
 - VCC → 5V
-- TRIG → GPIO 32
-- ECHO → GPIO 33 (con divisor de voltaje si necesario)
+- TRIG → GPIO 7
+- ECHO → GPIO 15 (con divisor de voltaje si necesario)
 - GND → GND
 
 ### OLED I2C:
 - VCC → 3.3V
 - GND → GND
-- SDA → GPIO 21
-- SCL → GPIO 22
+- SDA → GPIO 17
+- SCL → GPIO 18
 
 ### Buzzer (opcional):
-- Positivo → GPIO 15
+- Positivo → GPIO 16
 - Negativo → GND
 
 ## Información en la pantalla OLED
@@ -154,12 +154,14 @@ OLED_SCL = 22
 | Parámetro | SEMAFORO A | SEMAFORO B |
 |-----------|------------|------------|
 | DEVICE_ID | 1 | 2 |
-| LED_ROJO | GPIO 16 | GPIO 2 |
-| LED_AMARILLO | GPIO 17 | GPIO 4 |
-| LED_VERDE | GPIO 18 | GPIO 5 |
-| TRIG_PIN | GPIO 25 | GPIO 32 |
-| ECHO_PIN | GPIO 26 | GPIO 33 |
-| BUZZER_PIN | GPIO 27 | GPIO 15 |
+| LED_ROJO | GPIO 1 | GPIO 4 |
+| LED_AMARILLO | GPIO 2 | GPIO 5 |
+| LED_VERDE | GPIO 42 | GPIO 6 |
+| TRIG_PIN | GPIO 40 | GPIO 7 |
+| ECHO_PIN | GPIO 39 | GPIO 15 |
+| BUZZER_PIN | GPIO 38 | GPIO 16 |
+| OLED_SDA | GPIO 21 | GPIO 17 |
+| OLED_SCL | GPIO 47 | GPIO 18 |
 | Peer MAC | MAC de B | MAC de A |
 | Ciclo inicial | Par (0, 2, 4...) | Impar (1, 3, 5...) |
 

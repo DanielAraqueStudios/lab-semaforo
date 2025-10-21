@@ -3,24 +3,28 @@
 Ejemplo de asignación de pines para cada ESP (ajustar según la placa):
 
 ESP_A (SEMAFORO A)
-- GPIO 16 -> LED_ROJO_A (con resistencia 220Ω)
-- GPIO 17 -> LED_AMARILLO_A
-- GPIO 18 -> LED_VERDE_A
-- GPIO 25 -> TRIG_HCSR04_A
-- GPIO 26 -> ECHO_HCSR04_A (usar divisor si ECHO=5V)
+- GPIO 1  -> LED_ROJO_A (con resistencia 220Ω)
+- GPIO 2  -> LED_AMARILLO_A
+- GPIO 42 -> LED_VERDE_A
+- GPIO 40 -> TRIG_HCSR04_A
+- GPIO 39 -> ECHO_HCSR04_A (usar divisor si ECHO=5V)
 - GPIO 21 -> OLED SDA
-- GPIO 22 -> OLED SCL
-- GPIO 27 -> BUZZER_A (opcional)
+- GPIO 47 -> OLED SCL
+- GPIO 38 -> BUZZER_A (opcional)
+
+Pines disponibles para expansión: 35, 36, 37, 48
 
 ESP_B (SEMAFORO B)
-- GPIO 2  -> LED_ROJO_B
-- GPIO 4  -> LED_AMARILLO_B
-- GPIO 5  -> LED_VERDE_B
-- GPIO 32 -> TRIG_HCSR04_B
-- GPIO 33 -> ECHO_HCSR04_B
-- GPIO 21 -> OLED SDA
-- GPIO 22 -> OLED SCL
-- GPIO 15 -> BUZZER_B (opcional)
+- GPIO 4  -> LED_ROJO_B (con resistencia 220Ω)
+- GPIO 5  -> LED_AMARILLO_B
+- GPIO 6  -> LED_VERDE_B
+- GPIO 7  -> TRIG_HCSR04_B
+- GPIO 15 -> ECHO_HCSR04_B (usar divisor si ECHO=5V)
+- GPIO 17 -> OLED SDA
+- GPIO 18 -> OLED SCL
+- GPIO 16 -> BUZZER_B (opcional)
+
+Pines disponibles para expansión B: 3, 8, 9, 10, 11, 12, 13, 14, 46
 
 Conexiones generales:
 - GND comunes entre ambos ESP y sensores.

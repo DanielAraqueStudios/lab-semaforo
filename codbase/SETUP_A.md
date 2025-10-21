@@ -47,14 +47,16 @@ Debes reemplazar esto con la dirección MAC real del SEMAFORO B.
 
 ### 2. Verificar pines (opcional)
 Si tu placa ESP32-S3 usa pines diferentes, ajusta en las líneas 33-43:
-- LED_ROJO = 16
-- LED_AMARILLO = 17
-- LED_VERDE = 18
-- TRIG_PIN = 25
-- ECHO_PIN = 26
-- BUZZER_PIN = 27
+- LED_ROJO = 1
+- LED_AMARILLO = 2
+- LED_VERDE = 42
+- TRIG_PIN = 40
+- ECHO_PIN = 39
+- BUZZER_PIN = 38
 - OLED_SDA = 21
-- OLED_SCL = 22
+- OLED_SCL = 47
+
+**NOTA:** Estos pines están optimizados para ESP32-S3. GPIO1 y GPIO2 son seguros en S3.
 
 ### 3. Ajustar parámetros (opcional)
 Líneas 51-60:
@@ -92,24 +94,24 @@ Líneas 51-60:
 ## Cableado del hardware
 
 ### LEDs (con resistencias 220Ω):
-- LED ROJO (ánodo) → GPIO 16 → resistencia → LED (cátodo) → GND
-- LED AMARILLO → GPIO 17 → resistencia → GND
-- LED VERDE → GPIO 18 → resistencia → GND
+- LED ROJO (ánodo) → GPIO 1 → resistencia → LED (cátodo) → GND
+- LED AMARILLO → GPIO 2 → resistencia → GND
+- LED VERDE → GPIO 42 → resistencia → GND
 
 ### Sensor HC-SR04:
 - VCC → 5V (o VIN del ESP32)
-- TRIG → GPIO 25
-- ECHO → GPIO 26 (usar divisor de voltaje si ECHO=5V: 2 resistencias 1kΩ y 2kΩ)
+- TRIG → GPIO 40
+- ECHO → GPIO 39 (usar divisor de voltaje si ECHO=5V: 2 resistencias 1kΩ y 2kΩ)
 - GND → GND
 
 ### OLED I2C:
 - VCC → 3.3V
 - GND → GND
 - SDA → GPIO 21
-- SCL → GPIO 22
+- SCL → GPIO 47
 
 ### Buzzer (opcional):
-- Positivo → GPIO 27
+- Positivo → GPIO 38
 - Negativo → GND
 (Si requiere más corriente, usar transistor NPN)
 
