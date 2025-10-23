@@ -50,7 +50,8 @@
 uint8_t peerMAC[6] = {0x50, 0x78, 0x7D, 0x15, 0xB3, 0x84}  ; // MAC de ESP32-B
 
 // ==================== PARÁMETROS DEL SISTEMA ====================
-#define GREEN_NORMAL        10000  // 10 segundos en verde (modo normal)
+#define GREEN_NORMAL        10000  // 10 segundos en verde (modo prioridad)
+#define GREEN_NO_CAR        30000  // 30 segundos en verde (sin carros)
 #define YELLOW_DURATION     3000   // 3 segundos en amarillo
 #define ALL_RED_DURATION    1000   // 1 segundo con ambos en rojo (seguridad)
 #define MAX_GREEN           20000  // Máximo tiempo en verde (modo adaptativo)
@@ -170,10 +171,6 @@ void updateVehicleDetection() {
 
 // ==================== FUNCIONES DE PANTALLA OLED ====================
 void updateDisplay() {
-  // OLED deshabilitado temporalmente
-  return;
-  
-  /*
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
@@ -245,7 +242,6 @@ void updateDisplay() {
   }
   
   display.display();
-  */
 }
 
 // ==================== CALLBACKS ESP-NOW ====================
@@ -457,32 +453,95 @@ bool shouldGetPriority() {
 void updateStateMachine() {
   unsigned long elapsed = millis() - stateStartTime;
   
+  static bool greenWasNoCar = false;
+  static bool greenWasPriority = false;
+  static bool remoteHadNoCar = false;
+
   switch(currentState) {
     case STATE_ALL_RED:
       if (elapsed >= ALL_RED_DURATION) {
-        // SEMÁFORO A tiene prioridad: puede salir de ALL_RED sin esperar al remoto
-        // Decidir quién pasa a verde
-        if (shouldGetPriority() || (cycleCount % 2 == 0)) {
-          if (canTransitionToGreen()) {
-            currentState = STATE_GREEN;
-            greenDuration = vehicleDetected ? MAX_GREEN : GREEN_NORMAL;
-            stateStartTime = millis();
-            Serial.println("-> VERDE");
+        // SEGURIDAD CRÍTICA: Verificar PRIMERO que el otro NO esté en verde/amarillo
+        if (remoteState == STATE_GREEN || remoteState == STATE_YELLOW) {
+          Serial.println("[SEGURIDAD] Otro semáforo en verde/amarillo - manteniendo ALL_RED");
+          break;  // NO hacer ninguna transición
+        }
+        
+        bool shouldTakeGreen = false;
+        bool shouldCede = false;
+        
+        // Determinar si debe pasar a verde o ceder
+        if (requestPriority && !remoteRequestPriority) {
+          // Solo A detecta carro -> A pasa a verde
+          greenDuration = GREEN_NORMAL;
+          greenWasNoCar = false;
+          greenWasPriority = true;
+          shouldTakeGreen = true;
+          Serial.println("[DECISION] A detecta carro, B no -> A pasa a verde");
+        } else if (!requestPriority && remoteRequestPriority) {
+          // Solo B detecta carro -> A cede a B
+          shouldCede = true;
+          Serial.println("[DECISION] B detecta carro, A no -> A cede");
+        } else if (requestPriority && remoteRequestPriority) {
+          // Ambos detectan -> desempate por distancia/ID
+          greenDuration = GREEN_NORMAL;
+          greenWasNoCar = false;
+          greenWasPriority = true;
+          if (currentDistance < remoteDistance - 10) {
+            shouldTakeGreen = true;
+            Serial.println("[DECISION] Ambos detectan, A más cerca -> A pasa a verde");
+          } else if (abs((int)currentDistance - (int)remoteDistance) < 10 && DEVICE_ID < 2) {
+            shouldTakeGreen = true;
+            Serial.println("[DECISION] Ambos detectan, distancia similar, A tiene ID menor -> A pasa a verde");
+          } else {
+            shouldCede = true;
+            Serial.println("[DECISION] Ambos detectan, B gana desempate -> A cede");
           }
         } else {
+          // Ninguno detecta -> alternancia por ciclo
+          greenDuration = GREEN_NO_CAR;
+          greenWasNoCar = true;
+          greenWasPriority = false;
+          if (cycleCount % 2 == 0) {
+            shouldTakeGreen = true;
+            Serial.println("[DECISION] Ninguno detecta, ciclo par -> A pasa a verde");
+          } else {
+            shouldCede = true;
+            Serial.println("[DECISION] Ninguno detecta, ciclo impar -> A cede");
+          }
+        }
+        
+        // Ejecutar transición CON verificación de seguridad
+        if (shouldTakeGreen) {
+          // DOBLE VERIFICACIÓN antes de pasar a verde
+          if (remoteState == STATE_RED || remoteState == STATE_ALL_RED) {
+            currentState = STATE_GREEN;
+            stateStartTime = millis();
+            Serial.println("-> VERDE [CONFIRMADO SEGURO]");
+          } else {
+            Serial.println("[BLOQUEO SEGURIDAD] Otro NO está en rojo - NO pasar a verde");
+            // Mantener ALL_RED y resetear timer para reintentar
+            stateStartTime = millis();
+          }
+        } else if (shouldCede) {
           currentState = STATE_RED;
           stateStartTime = millis();
           Serial.println("-> ROJO (turno de B)");
         }
       }
       break;
-      
+
     case STATE_GREEN:
-      // Extender verde si hay vehículo y no excede el máximo
-      if (vehicleDetected && elapsed < MAX_GREEN && greenDuration < MAX_GREEN) {
-        greenDuration = min(greenDuration + EXTEND_STEP, (int)MAX_GREEN);
+      // CASO B/C: Si durante el verde "sin carros" aparece un carro en el otro semáforo, acortar a 10s
+      if (greenWasNoCar && (remoteRequestPriority || vehicleDetected)) {
+        unsigned long tiempoEnVerde = millis() - stateStartTime;
+        if (tiempoEnVerde < GREEN_NORMAL) {
+          greenDuration = GREEN_NORMAL;
+          // Si ya pasaron más de 2s, solo quedan 10-tiempoEnVerde/1000
+          Serial.println("[PRIORIDAD] Apareció carro, acortando verde a 10s desde aparición");
+        }
+        greenWasNoCar = false;
+        greenWasPriority = true;
       }
-      
       if (elapsed >= greenDuration) {
         currentState = STATE_YELLOW;
         stateStartTime = millis();
@@ -490,7 +549,7 @@ void updateStateMachine() {
         tone(BUZZER_PIN, 1000, 200);  // Beep opcional
       }
       break;
-      
+
     case STATE_YELLOW:
       if (elapsed >= YELLOW_DURATION) {
         currentState = STATE_RED;
@@ -500,21 +559,19 @@ void updateStateMachine() {
         Serial.println("-> ROJO");
       }
       break;
-      
+
     case STATE_RED:
-      // Esperar a que el otro complete su ciclo
       if (remoteState == STATE_RED || remoteState == STATE_ALL_RED) {
         currentState = STATE_ALL_RED;
         stateStartTime = millis();
         Serial.println("-> ALL_RED (preparar cambio)");
       }
       break;
-      
+
     case STATE_WAIT:
-      // Estado de espera especial (no usado en esta implementación simple)
       break;
   }
-  
+
   updateLEDsForState();
 }
 
@@ -548,8 +605,7 @@ void setup() {
   }
   Serial.println();
 
-  // Inicializar OLED (DESHABILITADO TEMPORALMENTE)
-  /*
+  // Inicializar OLED
   Wire.begin(OLED_SDA, OLED_SCL);
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println("Error inicializando OLED");
@@ -563,8 +619,6 @@ void setup() {
     display.println("Iniciando...");
     display.display();
   }
-  */
-  Serial.println("OLED: Deshabilitado (no conectado)");
 
   // Inicializar ESP-NOW
   initESPNow();

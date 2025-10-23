@@ -456,33 +456,92 @@ bool shouldGetPriority() {
 void updateStateMachine() {
   unsigned long elapsed = millis() - stateStartTime;
   
+  static bool greenWasNoCar = false;
+  static bool greenWasPriority = false;
+
   switch(currentState) {
     case STATE_ALL_RED:
       if (elapsed >= ALL_RED_DURATION) {
-        // SEMÁFORO B espera a que A salga de ALL_RED primero para evitar conflicto
-        if (remoteState != STATE_ALL_RED) {
-          // Decidir quién pasa a verde
-          if (shouldGetPriority() || (cycleCount % 2 == 1)) {  // B arranca en ciclos impares
-            if (canTransitionToGreen()) {
-              currentState = STATE_GREEN;
-              greenDuration = vehicleDetected ? MAX_GREEN : GREEN_NORMAL;
-              stateStartTime = millis();
-              Serial.println("-> VERDE");
-            }
+        // SEGURIDAD CRÍTICA: Verificar PRIMERO que el otro NO esté en verde/amarillo
+        if (remoteState == STATE_GREEN || remoteState == STATE_YELLOW) {
+          Serial.println("[SEGURIDAD] Otro semáforo en verde/amarillo - manteniendo ALL_RED");
+          break;  // NO hacer ninguna transición
+        }
+        
+        bool shouldTakeGreen = false;
+        bool shouldCede = false;
+        
+        // Determinar si debe pasar a verde o ceder
+        if (requestPriority && !remoteRequestPriority) {
+          // Solo B detecta carro -> B pasa a verde
+          greenDuration = GREEN_NORMAL;
+          greenWasNoCar = false;
+          greenWasPriority = true;
+          shouldTakeGreen = true;
+          Serial.println("[DECISION] B detecta carro, A no -> B pasa a verde");
+        } else if (!requestPriority && remoteRequestPriority) {
+          // Solo A detecta carro -> B cede a A
+          shouldCede = true;
+          Serial.println("[DECISION] A detecta carro, B no -> B cede");
+        } else if (requestPriority && remoteRequestPriority) {
+          // Ambos detectan -> desempate por distancia/ID
+          greenDuration = GREEN_NORMAL;
+          greenWasNoCar = false;
+          greenWasPriority = true;
+          if (currentDistance < remoteDistance - 10) {
+            shouldTakeGreen = true;
+            Serial.println("[DECISION] Ambos detectan, B más cerca -> B pasa a verde");
+          } else if (abs((int)currentDistance - (int)remoteDistance) < 10 && DEVICE_ID > 1) {
+            shouldTakeGreen = true;
+            Serial.println("[DECISION] Ambos detectan, distancia similar, B tiene ID mayor -> B pasa a verde");
           } else {
-            currentState = STATE_RED;
-            stateStartTime = millis();
-            Serial.println("-> ROJO (turno de A)");
+            shouldCede = true;
+            Serial.println("[DECISION] Ambos detectan, A gana desempate -> B cede");
+          }
+        } else {
+          // Ninguno detecta -> alternancia por ciclo
+          greenDuration = GREEN_NORMAL * 3; // 30 segundos cuando no hay carros
+          greenWasNoCar = true;
+          greenWasPriority = false;
+          if (cycleCount % 2 == 1) {
+            shouldTakeGreen = true;
+            Serial.println("[DECISION] Ninguno detecta, ciclo impar -> B pasa a verde");
+          } else {
+            shouldCede = true;
+            Serial.println("[DECISION] Ninguno detecta, ciclo par -> B cede");
           }
         }
-        // Si A aún está en ALL_RED, B espera
+        
+        // Ejecutar transición CON verificación de seguridad
+        if (shouldTakeGreen) {
+          // DOBLE VERIFICACIÓN antes de pasar a verde
+          if (remoteState == STATE_RED || remoteState == STATE_ALL_RED) {
+            currentState = STATE_GREEN;
+            stateStartTime = millis();
+            Serial.println("-> VERDE [CONFIRMADO SEGURO]");
+          } else {
+            Serial.println("[BLOQUEO SEGURIDAD] Otro NO está en rojo - NO pasar a verde");
+            // Mantener ALL_RED y resetear timer para reintentar
+            stateStartTime = millis();
+          }
+        } else if (shouldCede) {
+          currentState = STATE_RED;
+          stateStartTime = millis();
+          Serial.println("-> ROJO (turno de A)");
+        }
       }
       break;
       
     case STATE_GREEN:
-      // Extender verde si hay vehículo y no excede el máximo
-      if (vehicleDetected && elapsed < MAX_GREEN && greenDuration < MAX_GREEN) {
-        greenDuration = min(greenDuration + EXTEND_STEP, (int)MAX_GREEN);
+      // Si durante el verde "sin carros" aparece un carro en el otro semáforo, acortar a 10s
+      if (greenWasNoCar && (remoteRequestPriority || vehicleDetected)) {
+        unsigned long tiempoEnVerde = millis() - stateStartTime;
+        if (tiempoEnVerde < GREEN_NORMAL) {
+          greenDuration = GREEN_NORMAL;
+          Serial.println("[PRIORIDAD] Apareció carro, acortando verde a 10s desde aparición");
+        }
+        greenWasNoCar = false;
+        greenWasPriority = true;
       }
       
       if (elapsed >= greenDuration) {
