@@ -34,12 +34,15 @@ void setup() {
     Serial.println("Verifica las MACs configuradas");
   }
   Serial.println("====================================\n");
+
+  // Configurar LED integrado (GPIO 2 en ESP32)
+  pinMode(2, OUTPUT);
 }
 
 void loop() {
-  // Parpadear LED integrado cada segundo
-  digitalWrite(LED_BUILTIN, HIGH);
+  // Parpadear LED integrado cada segundo (GPIO 2 en ESP32)
+  digitalWrite(2, HIGH);
   delay(500);
-  digitalWrite(LED_BUILTIN, LOW);
+  digitalWrite(2, LOW);
   delay(500);
 }
